@@ -17,7 +17,7 @@ st.markdown("""
         background-attachment: fixed;
     }
     [data-testid="stHeader"] { background: rgba(0,0,0,0); }
-    .game-card {
+    .game-card, .prop-card {
         background: rgba(255, 255, 255, 0.04);
         backdrop-filter: blur(12px);
         -webkit-backdrop-filter: blur(12px);
@@ -27,11 +27,13 @@ st.markdown("""
         margin-bottom: 25px;
         box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.8);
     }
+    .prop-card { padding: 20px; border-left: 5px solid #1e88e5; }
     .team-name { font-size: 26px; font-weight: 800; color: #ffffff; letter-spacing: -0.5px; }
     .vs-text { color: #555; font-size: 18px; margin: 0 10px; }
     .metric-box { text-align: center; background: rgba(0,0,0,0.3); padding: 10px; border-radius: 12px; min-width: 100px; }
     .metric-label { font-size: 10px; color: #888; text-transform: uppercase; margin-bottom: 2px; letter-spacing: 1px; }
     .metric-value { font-size: 20px; font-weight: 700; color: #fff; }
+    .value-badge { padding: 5px 12px; border-radius: 50px; font-size: 12px; font-weight: bold; text-transform: uppercase; }
     .stButton>button {
         background: linear-gradient(45deg, #1e88e5, #1565c0);
         color: white;
@@ -42,10 +44,6 @@ st.markdown("""
         transition: 0.3s;
         box-shadow: 0 4px 15px rgba(30, 136, 229, 0.4);
     }
-    .stButton>button:hover {
-        transform: scale(1.05);
-        box-shadow: 0 6px 20px rgba(30, 136, 229, 0.6);
-    }
     </style>
     """, unsafe_allow_html=True)
 
@@ -53,8 +51,9 @@ st.markdown("""
 if 'results' not in st.session_state: st.session_state.results = None
 if 'injuries' not in st.session_state: st.session_state.injuries = {}
 if 'live_stats' not in st.session_state: st.session_state.live_stats = {}
+if 'smart_props' not in st.session_state: st.session_state.smart_props = []
 
-# --- 2. DATA (Fallback & Star Definitions) ---
+# --- 2. DATA (Fallback Definitions) ---
 NBA_STATS = {
     "Atlanta Hawks": {"ppp": 1.12, "opp_ppp": 1.13, "pace": 105.9, "stars": ["Jalen Johnson", "Zaccharie Risacher"]},
     "Boston Celtics": {"ppp": 1.21, "opp_ppp": 1.10, "pace": 95.3, "stars": ["Jayson Tatum", "Jaylen Brown"]},
@@ -95,38 +94,22 @@ def fetch_live_metrics():
         live_map = {}
         for _, row in data.iterrows():
             poss = row['FGA'] + (0.44 * row['FTA']) + row['TOV']
-            live_map[row['TEAM_NAME']] = {
-                "ppp": row['PTS'] / poss,
-                "opp_ppp": row['OPP_PTS'] / poss,
-                "pace": row['PACE']
-            }
+            live_map[row['TEAM_NAME']] = {"ppp": row['PTS'] / poss, "opp_ppp": row['OPP_PTS'] / poss, "pace": row['PACE']}
         return live_map
-    except:
-        return {}
+    except: return {}
 
-# --- NEW: PLAYER PROP ENGINE ---
 @st.cache_data(ttl=3600)
-def get_player_stats(player_name):
+def get_prop_avg(player_name):
     from nba_api.stats.static import players
     from nba_api.stats.endpoints import playergamelog
     try:
         search = players.find_players_by_full_name(player_name)
-        if not search: return None
-        p_id = search[0]['id']
-        # Fetching current 2025-26 Season Log
-        log = playergamelog.PlayerGameLog(player_id=p_id, season='2025-26').get_data_frames()[0]
-        if log.empty: return "No games found for 2025-26."
-        recent = log.head(5)
-        return {
-            "avg_pts": recent['PTS'].mean(),
-            "avg_reb": recent['REB'].mean(),
-            "avg_ast": recent['AST'].mean(),
-            "last_5": recent[['PTS', 'REB', 'AST']].values.tolist()
-        }
-    except Exception as e:
-        return None
+        if not search: return 0
+        log = playergamelog.PlayerGameLog(player_id=search[0]['id'], season='2025-26').get_data_frames()[0]
+        return log.head(5)['PTS'].mean()
+    except: return 0
 
-# --- 4. ANALYTIC ENGINE (Logic Preserved) ---
+# --- 4. ANALYTIC ENGINE ---
 def run_sharp_analysis(away, home, line):
     a_base = st.session_state.live_stats.get(away, NBA_STATS.get(away))
     h_base = st.session_state.live_stats.get(home, NBA_STATS.get(home))
@@ -150,96 +133,95 @@ def run_sharp_analysis(away, home, line):
     final_proj = proj_a + proj_h
     diff = final_proj - line
     
-    if abs(diff) > 12: 
-        return ("🚫 STAY AWAY", final_proj, "Unreliable Edge (Trap Line)", "#808080")
-    if diff > 6.0: 
-        edge = min(15.0, diff)
-        return ("🔥 OVER", final_proj, f"Projected Edge: +{edge:.1f}%", "#2ecc71")
-    if diff < -6.0: 
-        edge = min(15.0, abs(diff))
-        return ("❄️ UNDER", final_proj, f"Projected Edge: +{edge:.1f}%", "#e74c3c")
-    
+    if abs(diff) > 12: return ("🚫 STAY AWAY", final_proj, "Unreliable Edge", "#808080")
+    if diff > 6.0: return ("🔥 OVER", final_proj, f"Edge: +{min(15.0, diff):.1f}%", "#2ecc71")
+    if diff < -6.0: return ("❄️ UNDER", final_proj, f"Edge: +{min(15.0, abs(diff)):.1f}%", "#e74c3c")
     return ("🚫 STAY AWAY", final_proj, "Line is too Efficient", "#3498db")
 
 # --- 5. CALLBACKS ---
-def sync_live_data():
-    with st.spinner("Syncing Live NBA.com Data & Vegas Odds..."):
+def sync_all_data():
+    with st.spinner("Syncing Live NBA.com Data & Smart Props..."):
         st.session_state.live_stats = fetch_live_metrics()
-        today = datetime.now().strftime('%Y-%m-%d')
-        inj_url = f"https://nba-injury-reports.p.rapidapi.com/injuries/{today}"
-        headers = {"X-RapidAPI-Key": "55ee678671msh2dd4de4a390207bp10cd2bjsnf77bbbf65916", "X-RapidAPI-Host": "nba-injury-reports.p.rapidapi.com"}
-        try:
-            i_res = requests.get(inj_url, headers=headers)
-            if i_res.status_code == 200:
-                st.session_state.injuries = {item['player']: item['status'] for item in i_res.json()}
-        except: pass
+        API_KEY = "27970d14c8e8eb9f2a217c775db6571f"
         
+        # Game Totals
         try:
             o_res = requests.get("https://api.the-odds-api.com/v4/sports/basketball_nba/odds", 
-                               params={"api_key": "27970d14c8e8eb9f2a217c775db6571f", "regions": "us", "markets": "totals"})
-            if o_res.status_code == 200:
-                st.session_state.results = o_res.json()
+                               params={"api_key": API_KEY, "regions": "us", "markets": "totals"}).json()
+            st.session_state.results = o_res
+            
+            # Fetch Smart Props for the first 2 games to avoid lag
+            smart_list = []
+            for game in o_res[:2]:
+                p_res = requests.get(f"https://api.the-odds-api.com/v4/sports/basketball_nba/events/{game['id']}/odds",
+                                   params={"api_key": API_KEY, "regions": "us", "markets": "player_points"}).json()
+                try:
+                    outcomes = p_res['bookmakers'][0]['markets'][0]['outcomes']
+                    for o in outcomes[:4]: # Check top 4 stars
+                        if o['name'] == 'Over':
+                            avg = get_prop_avg(o['description'])
+                            if avg > 0:
+                                smart_list.append({"name": o['description'], "line": o['point'], "avg": avg})
+                except: continue
+            st.session_state.smart_props = smart_list
         except: st.error("Vegas API Down")
 
 # --- 6. UI DISPLAY ---
 st.title("🏀 NBA SHARP AI")
 st.markdown("<p style='color:#888; margin-top:-20px;'>REAL-TIME QUANTITATIVE ANALYSIS • 2026 SEASON</p>", unsafe_allow_html=True)
 
-# SIDEBAR PLAYER PROPS
-with st.sidebar:
-    st.header("👤 Player Prop Research")
-    st.markdown("Check recent performance before betting.")
-    p_name = st.text_input("Enter Player Name", placeholder="e.g. LeBron James")
-    if p_name:
-        p_data = get_player_stats(p_name)
-        if isinstance(p_data, dict):
-            st.subheader(f"Last 5 Avg for {p_name}")
-            c1, c2, c3 = st.columns(3)
-            c1.metric("PTS", f"{p_data['avg_pts']:.1f}")
-            c2.metric("REB", f"{p_data['avg_reb']:.1f}")
-            c3.metric("AST", f"{p_data['avg_ast']:.1f}")
-            st.caption("Game Log (PTS, REB, AST):")
-            st.code(p_data['last_5'])
-        else:
-            st.warning(p_data if p_data else "Player not found.")
-
 col_left, col_mid, col_right = st.columns([1,1,1])
 with col_mid:
-    st.button("REFRESH ANALYTICS", on_click=sync_live_data)
+    st.button("REFRESH ANALYTICS", on_click=sync_all_data, use_container_width=True)
 
-st.write("") 
+# Main Dashboard Tabs
+tab_games, tab_props = st.tabs(["🎮 GAME PROJECTIONS", "💎 SMART PLAYER PROPS"])
 
-if st.session_state.results:
-    for game in st.session_state.results:
-        h, a = game['home_team'], game['away_team']
-        try: line = game['bookmakers'][0]['markets'][0]['outcomes'][0]['point']
-        except: continue
-        
-        call, proj, status, color = run_sharp_analysis(a, h, line)
-        
-        st.markdown(f"""
-            <div class="game-card">
-                <div style="display: flex; justify-content: space-between; align-items: center;">
-                    <div style="flex: 2;">
-                        <span class="team-name">{a}</span>
-                        <span class="vs-text">at</span>
-                        <span class="team-name">{h}</span>
-                        <div style="display: flex; gap: 20px; margin-top: 20px;">
-                            <div class="metric-box">
-                                <p class="metric-label">Vegas Total</p>
-                                <p class="metric-value" style="color:#aaa;">{line}</p>
-                            </div>
-                            <div class="metric-box" style="border: 1px solid {color}44;">
-                                <p class="metric-label" style="color:{color};">AI Project</p>
-                                <p class="metric-value">{proj:.1f}</p>
+with tab_games:
+    if st.session_state.results:
+        for game in st.session_state.results:
+            h, a = game['home_team'], game['away_team']
+            try: line = game['bookmakers'][0]['markets'][0]['outcomes'][0]['point']
+            except: continue
+            call, proj, status, color = run_sharp_analysis(a, h, line)
+            st.markdown(f"""
+                <div class="game-card">
+                    <div style="display: flex; justify-content: space-between; align-items: center;">
+                        <div style="flex: 2;">
+                            <span class="team-name">{a}</span> <span class="vs-text">at</span> <span class="team-name">{h}</span>
+                            <div style="display: flex; gap: 20px; margin-top: 20px;">
+                                <div class="metric-box"><p class="metric-label">Vegas Total</p><p class="metric-value" style="color:#aaa;">{line}</p></div>
+                                <div class="metric-box" style="border: 1px solid {color}44;"><p class="metric-label" style="color:{color};">AI Project</p><p class="metric-value">{proj:.1f}</p></div>
                             </div>
                         </div>
-                    </div>
-                    <div style="flex: 1; text-align: right;">
-                        <h1 style="margin: 0; color: {color}; font-size: 42px; font-weight: 900; line-height: 1;">{call.split(' ')[1]}</h1>
-                        <p style="margin: 10px 0 0 0; color: #fff; font-weight: 600; letter-spacing: 1px; opacity: 0.9;">{status}</p>
-                        <div style="height: 4px; width: 100px; background: {color}; margin-left: auto; margin-top: 15px; border-radius: 10px;"></div>
+                        <div style="flex: 1; text-align: right;">
+                            <h1 style="margin: 0; color: {color}; font-size: 42px; font-weight: 900;">{call.split(' ')[1]}</h1>
+                            <p style="color: #fff; font-weight: 600;">{status}</p>
+                        </div>
                     </div>
                 </div>
-            </div>
-        """, unsafe_allow_html=True)
+            """, unsafe_allow_html=True)
+
+with tab_props:
+    if not st.session_state.smart_props:
+        st.info("Click Refresh to analyze Player Prop value lines.")
+    else:
+        for prop in st.session_state.smart_props:
+            diff = prop['avg'] - prop['line']
+            p_color = "#2ecc71" if diff > 2.0 else "#e74c3c" if diff < -2.0 else "#888"
+            p_call = "VALUE OVER" if diff > 2.0 else "VALUE UNDER" if diff < -2.0 else "FAIR LINE"
+            st.markdown(f"""
+                <div class="prop-card" style="border-left-color: {p_color};">
+                    <div style="display: flex; justify-content: space-between; align-items: center;">
+                        <div>
+                            <div style="font-size: 22px; font-weight: 800; color: #fff;">{prop['name']}</div>
+                            <div style="color: #888; font-size: 14px;">Season Average: {prop['avg']:.1f} PTS</div>
+                        </div>
+                        <div style="text-align: right;">
+                            <div style="font-size: 10px; color: #aaa;">VEGAS LINE</div>
+                            <div style="font-size: 24px; font-weight: bold; color: #fff;">{prop['line']}</div>
+                            <span class="value-badge" style="background: {p_color}22; color: {p_color}; border: 1px solid {p_color};">{p_call}</span>
+                        </div>
+                    </div>
+                </div>
+            """, unsafe_allow_html=True)
