@@ -2,7 +2,6 @@ import streamlit as st
 import requests
 from datetime import datetime
 import pandas as pd
-# Added for live automation
 from nba_api.stats.endpoints import leaguedashteamstats
 
 # --- 1. CONFIG & PRO VISUALS (UNTOUCHED) ---
@@ -89,13 +88,12 @@ NBA_STATS = {
     "Washington Wizards": {"ppp": 1.12, "opp_ppp": 1.18, "pace": 106.8, "stars": ["Kyle Kuzma", "Alex Sarr"]}
 }
 
-# --- 3. LIVE DATA FETCH (NEW AUTOMATION) ---
+# --- 3. LIVE DATA FETCH ---
 def fetch_live_metrics():
     try:
         data = leaguedashteamstats.LeagueDashTeamStats(per_mode_detailed='PerGame').get_data_frames()[0]
         live_map = {}
         for _, row in data.iterrows():
-            # Possessions estimate: FGA + 0.44*FTA + TOV
             poss = row['FGA'] + (0.44 * row['FTA']) + row['TOV']
             live_map[row['TEAM_NAME']] = {
                 "ppp": row['PTS'] / poss,
@@ -106,19 +104,36 @@ def fetch_live_metrics():
     except:
         return {}
 
+# --- NEW: PLAYER PROP ENGINE ---
+@st.cache_data(ttl=3600)
+def get_player_stats(player_name):
+    from nba_api.stats.static import players
+    from nba_api.stats.endpoints import playergamelog
+    try:
+        search = players.find_players_by_full_name(player_name)
+        if not search: return None
+        p_id = search[0]['id']
+        # Fetching current 2025-26 Season Log
+        log = playergamelog.PlayerGameLog(player_id=p_id, season='2025-26').get_data_frames()[0]
+        if log.empty: return "No games found for 2025-26."
+        recent = log.head(5)
+        return {
+            "avg_pts": recent['PTS'].mean(),
+            "avg_reb": recent['REB'].mean(),
+            "avg_ast": recent['AST'].mean(),
+            "last_5": recent[['PTS', 'REB', 'AST']].values.tolist()
+        }
+    except Exception as e:
+        return None
+
 # --- 4. ANALYTIC ENGINE (Logic Preserved) ---
 def run_sharp_analysis(away, home, line):
-    # Use Live data if available, else use manual Fallback
     a_base = st.session_state.live_stats.get(away, NBA_STATS.get(away))
     h_base = st.session_state.live_stats.get(home, NBA_STATS.get(home))
-    
-    # Ensure stars are pulled from the manual list regardless of stats source
     a_stars = NBA_STATS.get(away, {}).get("stars", [])
     h_stars = NBA_STATS.get(home, {}).get("stars", [])
-    
     a_ppp, h_ppp = a_base["ppp"], h_base["ppp"]
     
-    # Injury Adjustment Logic (Preserved)
     for star in a_stars:
         status = st.session_state.injuries.get(star, "Available")
         if status in ["Out", "Doubtful"]: a_ppp -= 0.08
@@ -149,10 +164,7 @@ def run_sharp_analysis(away, home, line):
 # --- 5. CALLBACKS ---
 def sync_live_data():
     with st.spinner("Syncing Live NBA.com Data & Vegas Odds..."):
-        # Fetch Live Stats
         st.session_state.live_stats = fetch_live_metrics()
-        
-        # Fetch Injuries (Existing)
         today = datetime.now().strftime('%Y-%m-%d')
         inj_url = f"https://nba-injury-reports.p.rapidapi.com/injuries/{today}"
         headers = {"X-RapidAPI-Key": "55ee678671msh2dd4de4a390207bp10cd2bjsnf77bbbf65916", "X-RapidAPI-Host": "nba-injury-reports.p.rapidapi.com"}
@@ -162,7 +174,6 @@ def sync_live_data():
                 st.session_state.injuries = {item['player']: item['status'] for item in i_res.json()}
         except: pass
         
-        # Fetch Odds (Existing)
         try:
             o_res = requests.get("https://api.the-odds-api.com/v4/sports/basketball_nba/odds", 
                                params={"api_key": "27970d14c8e8eb9f2a217c775db6571f", "regions": "us", "markets": "totals"})
@@ -170,9 +181,27 @@ def sync_live_data():
                 st.session_state.results = o_res.json()
         except: st.error("Vegas API Down")
 
-# --- 6. UI DISPLAY (Preserved) ---
+# --- 6. UI DISPLAY ---
 st.title("🏀 NBA SHARP AI")
 st.markdown("<p style='color:#888; margin-top:-20px;'>REAL-TIME QUANTITATIVE ANALYSIS • 2026 SEASON</p>", unsafe_allow_html=True)
+
+# SIDEBAR PLAYER PROPS
+with st.sidebar:
+    st.header("👤 Player Prop Research")
+    st.markdown("Check recent performance before betting.")
+    p_name = st.text_input("Enter Player Name", placeholder="e.g. LeBron James")
+    if p_name:
+        p_data = get_player_stats(p_name)
+        if isinstance(p_data, dict):
+            st.subheader(f"Last 5 Avg for {p_name}")
+            c1, c2, c3 = st.columns(3)
+            c1.metric("PTS", f"{p_data['avg_pts']:.1f}")
+            c2.metric("REB", f"{p_data['avg_reb']:.1f}")
+            c3.metric("AST", f"{p_data['avg_ast']:.1f}")
+            st.caption("Game Log (PTS, REB, AST):")
+            st.code(p_data['last_5'])
+        else:
+            st.warning(p_data if p_data else "Player not found.")
 
 col_left, col_mid, col_right = st.columns([1,1,1])
 with col_mid:
