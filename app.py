@@ -30,15 +30,21 @@ for key in ['results', 'injuries', 'live_stats', 'smart_props']:
 
 # --- 2. DATA UTILITIES ---
 NBA_STATS = {
+    "Atlanta Hawks": {"ppp": 1.12, "opp_ppp": 1.13, "pace": 105.9, "stars": ["Jalen Johnson", "Zaccharie Risacher"]},
+    "Boston Celtics": {"ppp": 1.21, "opp_ppp": 1.10, "pace": 95.3, "stars": ["Jayson Tatum", "Jaylen Brown"]},
     "Oklahoma City Thunder": {"ppp": 1.20, "opp_ppp": 1.04, "pace": 101.5, "stars": ["Shai Gilgeous-Alexander", "Chet Holmgren"]},
     "Los Angeles Lakers": {"ppp": 1.16, "opp_ppp": 1.15, "pace": 98.8, "stars": ["LeBron James", "Anthony Davis"]},
-    # ... add other teams as needed
+    # Add other teams here manually as needed
 }
 
 def fetch_live_metrics():
     try:
         data = leaguedashteamstats.LeagueDashTeamStats(per_mode_detailed='PerGame').get_data_frames()[0]
-        return {row['TEAM_NAME']: {"ppp": row['PTS']/(row['FGA']+(0.44*row['FTA'])+row['TOV']), "opp_ppp": row['OPP_PTS']/(row['FGA']+(0.44*row['FTA'])+row['TOV']), "pace": row['PACE']} for _, row in data.iterrows()}
+        live_map = {}
+        for _, row in data.iterrows():
+            poss = row['FGA'] + (0.44 * row['FTA']) + row['TOV']
+            live_map[row['TEAM_NAME']] = {"ppp": row['PTS'] / poss, "opp_ppp": row['OPP_PTS'] / poss, "pace": row['PACE']}
+        return live_map
     except: return {}
 
 @st.cache_data(ttl=3600)
@@ -59,7 +65,6 @@ def run_sharp_analysis(away, home, line):
     
     a_ppp, h_ppp = a_base["ppp"], h_base["ppp"]
     
-    # RapidAPI Injury Adjustment
     for star in NBA_STATS.get(away, {}).get("stars", []):
         if st.session_state.injuries.get(star) in ["Out", "Doubtful"]: a_ppp -= 0.08
     for star in NBA_STATS.get(home, {}).get("stars", []):
@@ -73,13 +78,12 @@ def run_sharp_analysis(away, home, line):
     call = "🔥 OVER" if diff > 6.0 else "❄️ UNDER" if diff < -6.0 else "🚫 STAY AWAY"
     return (call, proj_total, f"Edge: {abs(diff):.1f} pts", color)
 
-# --- 4. SYNC FUNCTION (The "Brain") ---
+# --- 4. SYNC FUNCTION ---
 def sync_all_data():
-    with st.spinner("🔄 Deep Sync: Injuries, Vegas, and NBA Stats..."):
-        # A. Live NBA.com Stats
+    with st.spinner("🔄 Syncing Injuries & Vegas Props..."):
         st.session_state.live_stats = fetch_live_metrics()
         
-        # B. RAPID API INJURIES
+        # Injury Sync
         RAPID_KEY = "55ee678671msh2dd4de4a390207bp10cd2bjsnf77bbbf65916"
         today = datetime.now().strftime('%Y-%m-%d')
         try:
@@ -87,9 +91,9 @@ def sync_all_data():
                                    headers={"X-RapidAPI-Key": RAPID_KEY, "X-RapidAPI-Host": "nba-injury-reports.p.rapidapi.com"})
             if inj_res.status_code == 200:
                 st.session_state.injuries = {i['player']: i['status'] for i in inj_res.json()}
-        except: st.error("Injury API Connection Failed")
+        except: pass
 
-        # C. VEGAS ODDS & PROPS
+        # Vegas Odds
         ODDS_KEY = "27970d14c8e8eb9f2a217c775db6571f"
         try:
             o_res = requests.get("https://api.the-odds-api.com/v4/sports/basketball_nba/odds", 
@@ -97,11 +101,11 @@ def sync_all_data():
             st.session_state.results = o_res
             
             smart_list = []
-            for game in o_res[:3]: # Limit to first 3 games for speed
+            for game in o_res[:2]: # Limit to avoid lag
                 p_res = requests.get(f"https://api.the-odds-api.com/v4/sports/basketball_nba/events/{game['id']}/odds",
                                    params={"api_key": ODDS_KEY, "regions": "us", "markets": "player_points"}).json()
                 try:
-                    for o in p_res['bookmakers'][0]['markets'][0]['outcomes'][:5]:
+                    for o in p_res['bookmakers'][0]['markets'][0]['outcomes'][:4]:
                         if o['name'] == 'Over':
                             avg = get_prop_avg(o['description'])
                             if avg > 0:
@@ -110,44 +114,24 @@ def sync_all_data():
             st.session_state.smart_props = smart_list
         except: st.error("Vegas API Down")
 
-# --- 5. UI RENDER ---
+# --- 5. UI ---
 st.title("🏀 NBA SHARP AI")
-col1, col2, col3 = st.columns([1,1,1])
-with col2: st.button("REFRESH ALL DATA", on_click=sync_all_data, use_container_width=True)
+if st.button("REFRESH ANALYTICS"): sync_all_data()
 
-tab_games, tab_props = st.tabs(["🎮 GAME PROJECTIONS", "💎 SMART PLAYER PROPS"])
+tab1, tab2 = st.tabs(["🎮 GAMES", "💎 PROPS"])
 
-with tab_games:
-    if st.session_state.results:
-        for game in st.session_state.results:
-            h, a = game['home_team'], game['away_team']
-            try: line = game['bookmakers'][0]['markets'][0]['outcomes'][0]['point']
-            except: continue
-            call, proj, status, color = run_sharp_analysis(a, h, line)
-            st.markdown(f'<div class="game-card"><b>{a} @ {h}</b><br>Vegas: {line} | AI: {proj:.1f}<br><span style="color:{color}">{call} ({status})</span></div>', unsafe_allow_html=True)
-
-with tab_props:
-    if st.session_state.smart_props:
-        for prop in st.session_state.smart_props:
-            status = st.session_state.injuries.get(prop['name'], "Active")
-            is_out = status in ["Out", "Doubtful"]
-            diff = prop['avg'] - prop['line']
-            
-            p_color = "#808080" if is_out else ("#2ecc71" if diff > 2.0 else "#e74c3c" if diff < -2.0 else "#3498db")
-            p_call = status.upper() if is_out else ("VALUE OVER" if diff > 2.0 else "VALUE UNDER" if diff < -2.0 else "FAIR LINE")
-
-            st.markdown(f"""
-                <div class="prop-card" style="border-left-color: {p_color}; opacity: {'0.5' if is_out else '1'};">
-                    <div style="display: flex; justify-content: space-between;">
-                        <div>
-                            <div style="font-size: 18px; font-weight: 800; color: #fff;">{prop['name']}</div>
-                            <div style="color: #888; font-size: 12px;">{prop['match']} | Avg: {prop['avg']:.1f} PTS</div>
-                            {f'<div class="injury-alert">⚠️ {status}</div>' if is_out else ''}
-                        </div>
-                        <div style="text-align: right;">
-                            <div style="font-size: 22px; font-weight: bold; color: #fff;">{prop['line']}</div>
-                            <span class="value-badge" style="color: {p_color}; border-color: {p_color};">{p_call}</span>
-                        </div>
-                    </div>
+with tab2:
+    for prop in st.session_state.smart_props:
+        status = st.session_state.injuries.get(prop['name'], "Active")
+        is_out = status in ["Out", "Doubtful"]
+        diff = prop['avg'] - prop['line']
+        p_color = "#808080" if is_out else ("#2ecc71" if diff > 2.0 else "#e74c3c")
+        
+        st.markdown(f"""
+            <div class="prop-card" style="border-left-color: {p_color}; opacity: {'0.5' if is_out else '1'};">
+                <div style="display: flex; justify-content: space-between;">
+                    <div><b>{prop['name']}</b><br><small>{prop['match']}</small></div>
+                    <div style="text-align: right;"><b>{prop['line']}</b><br><small>{status}</small></div>
                 </div>
-            """, unsafe_allow_html=True)
+            </div>
+        """, unsafe_allow_html=True)
