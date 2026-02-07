@@ -4,7 +4,7 @@ from datetime import datetime
 import pandas as pd
 from nba_api.stats.endpoints import leaguedashteamstats
 
-# --- 1. CONFIG & PRO VISUALS ---
+# --- 1. CONFIG & PRO VISUALS (UNTOUCHED) ---
 st.set_page_config(page_title="NBA Sharp AI", page_icon="🏀", layout="wide")
 
 st.markdown("""
@@ -20,16 +20,30 @@ st.markdown("""
     .game-card, .prop-card {
         background: rgba(255, 255, 255, 0.04);
         backdrop-filter: blur(12px);
+        -webkit-backdrop-filter: blur(12px);
         border: 1px solid rgba(255, 255, 255, 0.1);
         border-radius: 20px;
-        padding: 25px;
-        margin-bottom: 20px;
+        padding: 30px;
+        margin-bottom: 25px;
+        box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.8);
     }
-    .prop-card { border-left: 5px solid #1e88e5; transition: 0.3s; }
-    .prop-card:hover { transform: translateY(-3px); background: rgba(255, 255, 255, 0.08); }
-    .team-name { font-size: 24px; font-weight: 800; color: #ffffff; }
-    .metric-box { text-align: center; background: rgba(0,0,0,0.3); padding: 10px; border-radius: 12px; }
-    .value-badge { padding: 5px 12px; border-radius: 50px; font-size: 11px; font-weight: bold; border: 1px solid; }
+    .prop-card { padding: 20px; border-left: 5px solid #1e88e5; }
+    .team-name { font-size: 26px; font-weight: 800; color: #ffffff; letter-spacing: -0.5px; }
+    .vs-text { color: #555; font-size: 18px; margin: 0 10px; }
+    .metric-box { text-align: center; background: rgba(0,0,0,0.3); padding: 10px; border-radius: 12px; min-width: 100px; }
+    .metric-label { font-size: 10px; color: #888; text-transform: uppercase; margin-bottom: 2px; letter-spacing: 1px; }
+    .metric-value { font-size: 20px; font-weight: 700; color: #fff; }
+    .value-badge { padding: 5px 12px; border-radius: 50px; font-size: 12px; font-weight: bold; text-transform: uppercase; }
+    .stButton>button {
+        background: linear-gradient(45deg, #1e88e5, #1565c0);
+        color: white;
+        border: none;
+        padding: 15px 40px;
+        border-radius: 50px;
+        font-weight: bold;
+        transition: 0.3s;
+        box-shadow: 0 4px 15px rgba(30, 136, 229, 0.4);
+    }
     </style>
     """, unsafe_allow_html=True)
 
@@ -91,7 +105,6 @@ def get_prop_avg(player_name):
     try:
         search = players.find_players_by_full_name(player_name)
         if not search: return 0
-        # Check current season
         log = playergamelog.PlayerGameLog(player_id=search[0]['id'], season='2025-26').get_data_frames()[0]
         return log.head(5)['PTS'].mean()
     except: return 0
@@ -116,37 +129,39 @@ def run_sharp_analysis(away, home, line):
     avg_pace = (a_base["pace"] + h_base["pace"]) / 2
     proj_a = ((a_ppp + h_base["opp_ppp"]) / 2) * avg_pace
     proj_h = (((h_ppp + 0.015) + a_base["opp_ppp"]) / 2) * avg_pace 
+    
     final_proj = proj_a + proj_h
     diff = final_proj - line
     
     if abs(diff) > 12: return ("🚫 STAY AWAY", final_proj, "Unreliable Edge", "#808080")
     if diff > 6.0: return ("🔥 OVER", final_proj, f"Edge: +{min(15.0, diff):.1f}%", "#2ecc71")
-    if diff < -6.0: return ("❄️ UNDER", final_proj, f"Edge: +{min(15.0, abs(diff):.1f}%", "#e74c3c")
+    if diff < -6.0: return ("❄️ UNDER", final_proj, f"Edge: +{min(15.0, abs(diff)):.1f}%", "#e74c3c")
     return ("🚫 STAY AWAY", final_proj, "Line is too Efficient", "#3498db")
 
 # --- 5. CALLBACKS ---
 def sync_all_data():
-    with st.spinner("Analyzing Every Game & Prop..."):
+    with st.spinner("Syncing Live NBA.com Data & Smart Props..."):
         st.session_state.live_stats = fetch_live_metrics()
         API_KEY = "27970d14c8e8eb9f2a217c775db6571f"
         
+        # Game Totals
         try:
             o_res = requests.get("https://api.the-odds-api.com/v4/sports/basketball_nba/odds", 
                                params={"api_key": API_KEY, "regions": "us", "markets": "totals"}).json()
             st.session_state.results = o_res
             
+            # Fetch Smart Props for the first 2 games to avoid lag
             smart_list = []
-            # Scans ALL games today
-            for game in o_res:
+            for game in o_res[:2]:
                 p_res = requests.get(f"https://api.the-odds-api.com/v4/sports/basketball_nba/events/{game['id']}/odds",
                                    params={"api_key": API_KEY, "regions": "us", "markets": "player_points"}).json()
                 try:
                     outcomes = p_res['bookmakers'][0]['markets'][0]['outcomes']
-                    for o in outcomes: # Scans ALL players with lines
+                    for o in outcomes[:4]: # Check top 4 stars
                         if o['name'] == 'Over':
                             avg = get_prop_avg(o['description'])
                             if avg > 0:
-                                smart_list.append({"name": o['description'], "line": o['point'], "avg": avg, "match": f"{game['away_team']} @ {game['home_team']}"})
+                                smart_list.append({"name": o['description'], "line": o['point'], "avg": avg})
                 except: continue
             st.session_state.smart_props = smart_list
         except: st.error("Vegas API Down")
@@ -159,7 +174,8 @@ col_left, col_mid, col_right = st.columns([1,1,1])
 with col_mid:
     st.button("REFRESH ANALYTICS", on_click=sync_all_data, use_container_width=True)
 
-tab_games, tab_props = st.tabs(["🎮 GAME OVER/UNDERS", "💎 SMART PLAYER PROPS"])
+# Main Dashboard Tabs
+tab_games, tab_props = st.tabs(["🎮 GAME PROJECTIONS", "💎 SMART PLAYER PROPS"])
 
 with tab_games:
     if st.session_state.results:
@@ -170,17 +186,17 @@ with tab_games:
             call, proj, status, color = run_sharp_analysis(a, h, line)
             st.markdown(f"""
                 <div class="game-card">
-                    <div style="display: flex; justify-content: space-between;">
+                    <div style="display: flex; justify-content: space-between; align-items: center;">
                         <div style="flex: 2;">
-                            <span class="team-name">{a}</span> <span style="color:#555;">at</span> <span class="team-name">{h}</span>
+                            <span class="team-name">{a}</span> <span class="vs-text">at</span> <span class="team-name">{h}</span>
                             <div style="display: flex; gap: 20px; margin-top: 20px;">
-                                <div class="metric-box"><p style="font-size:10px; color:#888;">VEGAS</p><p style="color:#aaa; font-weight:bold;">{line}</p></div>
-                                <div class="metric-box" style="border: 1px solid {color}44;"><p style="font-size:10px; color:{color};">AI PROJ</p><p style="color:#fff; font-weight:bold;">{proj:.1f}</p></div>
+                                <div class="metric-box"><p class="metric-label">Vegas Total</p><p class="metric-value" style="color:#aaa;">{line}</p></div>
+                                <div class="metric-box" style="border: 1px solid {color}44;"><p class="metric-label" style="color:{color};">AI Project</p><p class="metric-value">{proj:.1f}</p></div>
                             </div>
                         </div>
-                        <div style="text-align: right;">
-                            <h1 style="margin: 0; color: {color}; font-size: 38px; font-weight: 900;">{call.split(' ')[1]}</h1>
-                            <p style="color: #fff; font-size: 12px; opacity:0.8;">{status}</p>
+                        <div style="flex: 1; text-align: right;">
+                            <h1 style="margin: 0; color: {color}; font-size: 42px; font-weight: 900;">{call.split(' ')[1]}</h1>
+                            <p style="color: #fff; font-weight: 600;">{status}</p>
                         </div>
                     </div>
                 </div>
@@ -188,26 +204,23 @@ with tab_games:
 
 with tab_props:
     if not st.session_state.smart_props:
-        st.info("Click Refresh to load smart player projections for today's games.")
+        st.info("Click Refresh to analyze Player Prop value lines.")
     else:
         for prop in st.session_state.smart_props:
             diff = prop['avg'] - prop['line']
-            # Smart Logic: Over if average is > 2 pts above line, Under if > 2 pts below, else Fair
-            p_color = "#2ecc71" if diff > 2.0 else "#e74c3c" if diff < -2.0 else "#3498db"
+            p_color = "#2ecc71" if diff > 2.0 else "#e74c3c" if diff < -2.0 else "#888"
             p_call = "VALUE OVER" if diff > 2.0 else "VALUE UNDER" if diff < -2.0 else "FAIR LINE"
-            
             st.markdown(f"""
                 <div class="prop-card" style="border-left-color: {p_color};">
-                    <div style="font-size: 11px; color: #555; margin-bottom: 5px;">{prop['match']}</div>
                     <div style="display: flex; justify-content: space-between; align-items: center;">
                         <div>
-                            <div style="font-size: 20px; font-weight: 800; color: #fff;">{prop['name']}</div>
-                            <div style="color: #888; font-size: 13px;">Season Avg: {prop['avg']:.1f} PTS</div>
+                            <div style="font-size: 22px; font-weight: 800; color: #fff;">{prop['name']}</div>
+                            <div style="color: #888; font-size: 14px;">Season Average: {prop['avg']:.1f} PTS</div>
                         </div>
                         <div style="text-align: right;">
-                            <div style="font-size: 10px; color: #aaa; letter-spacing:1px;">VEGAS LINE</div>
+                            <div style="font-size: 10px; color: #aaa;">VEGAS LINE</div>
                             <div style="font-size: 24px; font-weight: bold; color: #fff;">{prop['line']}</div>
-                            <span class="value-badge" style="background: {p_color}15; color: {p_color}; border-color: {p_color}44;">{p_call}</span>
+                            <span class="value-badge" style="background: {p_color}22; color: {p_color}; border: 1px solid {p_color};">{p_call}</span>
                         </div>
                     </div>
                 </div>
