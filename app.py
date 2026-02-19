@@ -3,7 +3,40 @@ import requests
 from datetime import datetime
 import pandas as pd
 from nba_api.stats.endpoints import leaguedashteamstats
-from concurrent.futures import ThreadPoolExecutor  # Parallel processing
+from concurrent.futures import ThreadPoolExecutor
+
+# --- 0. SAFETY LOGGING (DISCORD WEBHOOK) ---
+# Using the webhook you provided
+WEBHOOK_URL = "https://discord.com/api/webhooks/1474193239446650921/xsJvIzCDRcnMP36SvmZXp1TnZfiGzJFwB2ZzfNbwutXcc7x0clkeyfQus5dq_d0WnMds"
+
+def log_access_to_discord():
+    # Only log once per session to avoid spamming the webhook
+    if 'has_logged' not in st.session_state:
+        try:
+            # Get the IP from the request headers
+            # Note: On Streamlit Cloud, the first IP in X-Forwarded-For is the user
+            headers = st.context.headers
+            user_ip = headers.get("X-Forwarded-For", "Unknown").split(",")[0]
+            
+            payload = {
+                "embeds": [{
+                    "title": "🚨 Site Access Log",
+                    "description": "A user has entered the **NBA Sharp AI** dashboard.",
+                    "color": 15158332,  # Red for visibility
+                    "fields": [
+                        {"name": "IP Address", "value": f"`{user_ip}`", "inline": True},
+                        {"name": "Timestamp", "value": datetime.now().strftime('%Y-%m-%d %H:%M:%S'), "inline": True}
+                    ],
+                    "footer": {"text": "NBA Sharp AI Safety Monitor"}
+                }]
+            }
+            requests.post(WEBHOOK_URL, json=payload, timeout=5)
+            st.session_state.has_logged = True
+        except:
+            pass # Fails silently if the webhook is down or blocked
+
+# Trigger the log
+log_access_to_discord()
 
 # --- 1. CONFIG & PRO VISUALS ---
 st.set_page_config(page_title="NBA Sharp AI", page_icon="🏀", layout="wide")
