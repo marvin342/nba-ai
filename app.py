@@ -2,8 +2,9 @@ import streamlit as st
 import requests
 from datetime import datetime
 import pandas as pd
+import time  # NEW: Added for stability
 from nba_api.stats.endpoints import leaguedashteamstats
-from concurrent.futures import ThreadPoolExecutor  # Parallel processing
+from concurrent.futures import ThreadPoolExecutor 
 
 # --- 1. CONFIG & PRO VISUALS ---
 st.set_page_config(page_title="NBA Sharp AI", page_icon="🏀", layout="wide")
@@ -40,7 +41,7 @@ if 'live_stats' not in st.session_state: st.session_state.live_stats = {}
 if 'smart_props' not in st.session_state: st.session_state.smart_props = []
 if 'api_session' not in st.session_state: st.session_state.api_session = requests.Session()
 
-# --- 2. COMPLETE NBA DICTIONARY (ALL 30 TEAMS) ---
+# --- 2. COMPLETE NBA DICTIONARY ---
 NBA_STATS = {
     "Atlanta Hawks": {"ppp": 1.12, "opp_ppp": 1.13, "pace": 105.9, "stars": ["Jalen Johnson", "Zaccharie Risacher"]},
     "Boston Celtics": {"ppp": 1.21, "opp_ppp": 1.10, "pace": 95.3, "stars": ["Jayson Tatum", "Jaylen Brown"]},
@@ -75,20 +76,31 @@ NBA_STATS = {
 }
 
 @st.cache_data(ttl=3600)
-def get_prop_analysis(player_name, team_name):
+def get_prop_analysis(player_name, team_name, opponent_name):
     from nba_api.stats.static import players
     from nba_api.stats.endpoints import playergamelog
     try:
         search = players.find_players_by_full_name(player_name)
         if not search: return 0
-        log = playergamelog.PlayerGameLog(player_id=search[0]['id'], season='2025-26', timeout=15).get_data_frames()[0]
+        
+        # Stability: Small delay to prevent API timeouts from NBA.com
+        time.sleep(0.4) 
+        log = playergamelog.PlayerGameLog(player_id=search[0]['id'], season='2024-25', timeout=30).get_data_frames()[0]
+        if log.empty: return 0
+        
         recent_avg = log.head(5)['PTS'].mean()
         
+        # 🧠 THE STRENGTH UPGRADE: Factor in Opponent Defense
+        opp_def = NBA_STATS.get(opponent_name, {"opp_ppp": 1.11})["opp_ppp"]
+        matchup_multiplier = opp_def / 1.11 
+        
+        # Factor in Injury Usage boost
         boost = 1.0
         for star in NBA_STATS.get(team_name, {}).get("stars", []):
             if star != player_name and st.session_state.injuries.get(star) in ["Out", "Doubtful"]:
-                boost += 0.12 
-        return recent_avg * boost
+                boost += 0.15 
+                
+        return recent_avg * boost * matchup_multiplier
     except: return 0
 
 # --- 3. ANALYTIC ENGINE ---
@@ -119,12 +131,29 @@ def fetch_game_props_parallel(game):
     try:
         url = f"https://api.the-odds-api.com/v4/sports/basketball_nba/events/{game['id']}/odds"
         p_res = st.session_state.api_session.get(url, params={"api_key": ODDS_KEY, "regions": "us", "markets": "player_points"}).json()
-        for o in p_res['bookmakers'][0]['markets'][0]['outcomes']:
+        
+        # Fetch up to 5 players per game to maintain quality/speed
+        for o in p_res['bookmakers'][0]['markets'][0]['outcomes'][:5]:
             if o['name'] == 'Over':
-                p_team = game['home_team'] if o['description'] in str(game['home_team']) else game['away_team']
-                proj = get_prop_analysis(o['description'], p_team)
+                # Stronger side-detection logic
+                p_name = o['description']
+                home_team, away_team = game['home_team'], game['away_team']
+                
+                # Check if player belongs to home team or away team for matchup calculation
+                if p_name in str(NBA_STATS.get(home_team, {}).get("stars", [])):
+                    p_team, opp_team = home_team, away_team
+                else:
+                    p_team, opp_team = away_team, home_team
+
+                proj = get_prop_analysis(p_name, p_team, opp_team)
                 if proj > 0:
-                    res_list.append({"name": o['description'], "line": o['point'], "proj": proj, "match": f"{game['away_team']} @ {game['home_team']}"})
+                    res_list.append({
+                        "name": p_name, 
+                        "line": o['point'], 
+                        "proj": proj, 
+                        "match": f"{away_team} @ {home_team}",
+                        "diff": proj - o['point']
+                    })
     except: pass
     return res_list
 
@@ -144,12 +173,13 @@ def sync_all_data():
             o_res = st.session_state.api_session.get("https://api.the-odds-api.com/v4/sports/basketball_nba/odds", params={"api_key": ODDS_KEY, "regions": "us", "markets": "totals"}).json()
             st.session_state.results = o_res
             
-            # THE SPEED PATCH: Run up to 6 game scans at the same time
-            with ThreadPoolExecutor(max_workers=6) as executor:
-                prop_batches = list(executor.map(fetch_game_props_parallel, o_res[:6]))
+            # THE SPEED PATCH: Scanning next 5 games in parallel
+            with ThreadPoolExecutor(max_workers=5) as executor:
+                prop_batches = list(executor.map(fetch_game_props_parallel, o_res[:5]))
             
             combined_props = [item for sublist in prop_batches for item in sublist]
-            st.session_state.smart_props = sorted(combined_props, key=lambda x: abs(x['proj'] - x['line']), reverse=True)
+            # Sort by the largest difference between AI Proj and Vegas Line
+            st.session_state.smart_props = sorted(combined_props, key=lambda x: abs(x['diff']), reverse=True)
         except: st.error("API Limit or Connection Error")
 
 # --- 5. UI DISPLAY ---
@@ -170,19 +200,27 @@ with tab1:
 
 with tab2:
     if st.session_state.smart_props:
-        top_props = [p for p in st.session_state.smart_props if abs(p['proj'] - p['line']) > 4.5]
+        # 💎 NEW: STRONGER TOP PICKS HIGHLIGHT SECTION
+        top_props = [p for p in st.session_state.smart_props if abs(p['diff']) > 6.0]
         if top_props:
-            st.subheader("🔥 AI Parlay Builder (Top Props)")
-            st.markdown('<div class="parlay-box">', unsafe_allow_html=True)
+            st.subheader("💎 AI High Confidence Picks")
             for p in top_props[:3]:
-                st.write(f"✅ **{p['name']}**: {'OVER' if p['proj'] > p['line'] else 'UNDER'} {p['line']} pts")
-            st.markdown('</div>', unsafe_allow_html=True)
+                p_dir = "OVER" if p['diff'] > 0 else "UNDER"
+                st.markdown(f"""
+                    <div class="top-pick-card">
+                        <h4 style="margin:0; color:#2ecc71;">{p_dir} {p['line']} PTS</h4>
+                        <b>{p['name']}</b> ({p['match']})<br>
+                        AI Projecting: {p['proj']:.1f} | <b>Strong Edge: {abs(p['diff']):.1f}</b>
+                    </div>
+                """, unsafe_allow_html=True)
 
+        # 💎 ALL OTHER PROPS
+        st.write("---")
         for prop in st.session_state.smart_props:
-            diff = prop['proj'] - prop['line']
-            p_call = "💎 TOP PICK" if abs(diff) > 4.5 else "VALUE"
+            diff = prop['diff']
+            p_call = "💎 TOP PICK" if abs(diff) > 6.0 else "VALUE"
             p_dir = "OVER" if diff > 0 else "UNDER"
-            p_color = "#2ecc71" if diff > 2.0 else "#e74c3c" if diff < -2.0 else "#3498db"
+            p_color = "#2ecc71" if diff > 0 else "#e74c3c"
             st.markdown(f"""
                 <div class="prop-card" style="border-left-color: {p_color};">
                     <div style="display: flex; justify-content: space-between;">
