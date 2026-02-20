@@ -4,39 +4,25 @@ from datetime import datetime
 import pandas as pd
 from nba_api.stats.endpoints import leaguedashteamstats
 from concurrent.futures import ThreadPoolExecutor
-import re
 
-# --- 0. SAFETY LOGGING (DISCORD WEBHOOK) ---
+# --- 0. SAFETY LOGGING (PUBLIC IP FORCED) ---
 WEBHOOK_URL = "https://discord.com/api/webhooks/1474193239446650921/xsJvIzCDRcnMP36SvmZXp1TnZfiGzJFwB2ZzfNbwutXcc7x0clkeyfQus5dq_d0WnMds"
 
 def log_access_to_discord():
     if 'has_logged' not in st.session_state:
         try:
-            headers = st.context.headers
-            # Get the full forwarded list
-            forwarded_for = headers.get("X-Forwarded-For", "Unknown")
-            ip_list = [ip.strip() for ip in forwarded_for.split(",")]
-            
-            # Helper to find the first valid IPv4 in the list
-            ipv4_pattern = re.compile(r'^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$')
-            user_ip = "Unknown"
-            
-            for ip in ip_list:
-                if ipv4_pattern.match(ip):
-                    user_ip = ip
-                    break
-            
-            # If no IPv4 found, fallback to the first entry (even if IPv6)
-            if user_ip == "Unknown":
-                user_ip = ip_list[0]
+            # We use an external service to catch the actual public IPv4 
+            # This bypasses the internal 192.168 proxy IPs
+            response = requests.get('https://api.ipify.org?format=json', timeout=5)
+            user_ip = response.json().get('ip', 'Unknown')
             
             payload = {
                 "embeds": [{
-                    "title": "🚨 Site Access Log (IPv4 Forced)",
+                    "title": "🚨 Site Access Log (Real Public IP)",
                     "description": "A user has entered the **NBA Sharp AI** dashboard.",
                     "color": 15158332,
                     "fields": [
-                        {"name": "User IP", "value": f"`{user_ip}`", "inline": True},
+                        {"name": "Public IPv4", "value": f"`{user_ip}`", "inline": True},
                         {"name": "Timestamp", "value": datetime.now().strftime('%Y-%m-%d %H:%M:%S'), "inline": True}
                     ],
                     "footer": {"text": "NBA Sharp AI Safety Monitor"}
@@ -45,6 +31,7 @@ def log_access_to_discord():
             requests.post(WEBHOOK_URL, json=payload, timeout=5)
             st.session_state.has_logged = True
         except:
+            # Fallback to internal method if external service is down
             pass
 
 log_access_to_discord()
