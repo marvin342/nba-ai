@@ -4,27 +4,39 @@ from datetime import datetime
 import pandas as pd
 from nba_api.stats.endpoints import leaguedashteamstats
 from concurrent.futures import ThreadPoolExecutor
+import re
 
 # --- 0. SAFETY LOGGING (DISCORD WEBHOOK) ---
-# Using the webhook you provided
 WEBHOOK_URL = "https://discord.com/api/webhooks/1474193239446650921/xsJvIzCDRcnMP36SvmZXp1TnZfiGzJFwB2ZzfNbwutXcc7x0clkeyfQus5dq_d0WnMds"
 
 def log_access_to_discord():
-    # Only log once per session to avoid spamming the webhook
     if 'has_logged' not in st.session_state:
         try:
-            # Get the IP from the request headers
-            # Note: On Streamlit Cloud, the first IP in X-Forwarded-For is the user
             headers = st.context.headers
-            user_ip = headers.get("X-Forwarded-For", "Unknown").split(",")[0]
+            # Get the full forwarded list
+            forwarded_for = headers.get("X-Forwarded-For", "Unknown")
+            ip_list = [ip.strip() for ip in forwarded_for.split(",")]
+            
+            # Helper to find the first valid IPv4 in the list
+            ipv4_pattern = re.compile(r'^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$')
+            user_ip = "Unknown"
+            
+            for ip in ip_list:
+                if ipv4_pattern.match(ip):
+                    user_ip = ip
+                    break
+            
+            # If no IPv4 found, fallback to the first entry (even if IPv6)
+            if user_ip == "Unknown":
+                user_ip = ip_list[0]
             
             payload = {
                 "embeds": [{
-                    "title": "🚨 Site Access Log",
+                    "title": "🚨 Site Access Log (IPv4 Forced)",
                     "description": "A user has entered the **NBA Sharp AI** dashboard.",
-                    "color": 15158332,  # Red for visibility
+                    "color": 15158332,
                     "fields": [
-                        {"name": "IP Address", "value": f"`{user_ip}`", "inline": True},
+                        {"name": "User IP", "value": f"`{user_ip}`", "inline": True},
                         {"name": "Timestamp", "value": datetime.now().strftime('%Y-%m-%d %H:%M:%S'), "inline": True}
                     ],
                     "footer": {"text": "NBA Sharp AI Safety Monitor"}
@@ -33,9 +45,8 @@ def log_access_to_discord():
             requests.post(WEBHOOK_URL, json=payload, timeout=5)
             st.session_state.has_logged = True
         except:
-            pass # Fails silently if the webhook is down or blocked
+            pass
 
-# Trigger the log
 log_access_to_discord()
 
 # --- 1. CONFIG & PRO VISUALS ---
@@ -164,20 +175,17 @@ def fetch_game_props_parallel(game):
 # --- 4. CALLBACKS ---
 def sync_all_data():
     with st.spinner("🚀 Parallel Engine Engaged: Scanning all games at once..."):
-        # 1. Injury Report
         try:
             headers = {"X-RapidAPI-Key": "55ee678671msh2dd4de4a390207bp10cd2bjsnf77bbbf65916", "X-RapidAPI-Host": "nba-injury-reports.p.rapidapi.com"}
             i_res = st.session_state.api_session.get(f"https://nba-injury-reports.p.rapidapi.com/injuries/{datetime.now().strftime('%Y-%m-%d')}", headers=headers)
             if i_res.status_code == 200: st.session_state.injuries = {i['player']: i['status'] for i in i_res.json()}
         except: pass
 
-        # 2. Parallel Scanning for Odds & Props
         try:
             ODDS_KEY = "27970d14c8e8eb9f2a217c775db6571f"
             o_res = st.session_state.api_session.get("https://api.the-odds-api.com/v4/sports/basketball_nba/odds", params={"api_key": ODDS_KEY, "regions": "us", "markets": "totals"}).json()
             st.session_state.results = o_res
             
-            # THE SPEED PATCH: Run up to 6 game scans at the same time
             with ThreadPoolExecutor(max_workers=6) as executor:
                 prop_batches = list(executor.map(fetch_game_props_parallel, o_res[:6]))
             
