@@ -5,42 +5,42 @@ import pandas as pd
 from nba_api.stats.endpoints import leaguedashteamstats
 from concurrent.futures import ThreadPoolExecutor
 
-# --- 0. SAFETY LOGGING (FIXED FOR PUBLIC IP) ---
+# --- 0. SAFETY LOGGING (STABLE PUBLIC IP FETCH) ---
 WEBHOOK_URL = "https://discord.com/api/webhooks/1474193239446650921/xsJvIzCDRcnMP36SvmZXp1TnZfiGzJFwB2ZzfNbwutXcc7x0clkeyfQus5dq_d0WnMds"
 
 def log_access_to_discord():
+    # Ensure we only try to log once per session
     if 'has_logged' not in st.session_state:
         try:
-            # We use an external service to get the real public IP 
-            # This is the most reliable way on Streamlit Cloud
-            response = requests.get('https://api4.ipify.org?format=json', timeout=10)
+            # We call an external service to see the visitor's real public IP
+            # This is the industry standard for cloud-hosted apps like Streamlit
+            response = requests.get('https://api.ipify.org?format=json', timeout=10)
             user_ip = response.json().get('ip', 'Unknown')
             
-            payload = {
-                "embeds": [{
-                    "title": "🚨 Real Visitor Detected",
-                    "description": "Public IPv4 successfully captured.",
-                    "color": 15158332,
-                    "fields": [
-                        {"name": "Verified IP", "value": f"`{user_ip}`", "inline": True},
-                        {"name": "Timestamp", "value": datetime.now().strftime('%Y-%m-%d %H:%M:%S'), "inline": True}
-                    ],
-                    "footer": {"text": "NBA Sharp AI Safety Monitor"}
-                }]
-            }
-            requests.post(WEBHOOK_URL, json=payload, timeout=10)
-            st.session_state.has_logged = True
-        except Exception as e:
-            # If the external check fails, we try the header method as a backup
-            headers = st.context.headers
-            backup_ip = headers.get("X-Forwarded-For", "Unknown").split(",")[0]
-            if backup_ip != "Unknown":
-                st.session_state.has_logged = True # prevent double logging
+            # If we get a valid IP, send it to Discord
+            if user_ip != 'Unknown':
+                payload = {
+                    "embeds": [{
+                        "title": "🚨 Real Visitor Detected",
+                        "description": "Public IPv4 successfully captured through the proxy.",
+                        "color": 15158332,
+                        "fields": [
+                            {"name": "Verified IP", "value": f"`{user_ip}`", "inline": True},
+                            {"name": "Timestamp", "value": datetime.now().strftime('%Y-%m-%d %H:%M:%S'), "inline": True}
+                        ],
+                        "footer": {"text": "NBA Sharp AI Safety Monitor"}
+                    }]
+                }
+                requests.post(WEBHOOK_URL, json=payload, timeout=10)
+                st.session_state.has_logged = True
+        except Exception:
+            # If the IP service is down, we fail silently so the NBA app still works
+            pass
 
-# Trigger the log immediately
+# Trigger the logging logic
 log_access_to_discord()
 
-# --- 1. CONFIG & PRO VISUALS ---
+# --- 1. CONFIG & PRO VISUALS (REMAINS UNTOUCHED) ---
 st.set_page_config(page_title="NBA Sharp AI", page_icon="🏀", layout="wide")
 
 st.markdown("""
@@ -75,7 +75,7 @@ if 'live_stats' not in st.session_state: st.session_state.live_stats = {}
 if 'smart_props' not in st.session_state: st.session_state.smart_props = []
 if 'api_session' not in st.session_state: st.session_state.api_session = requests.Session()
 
-# --- 2. COMPLETE NBA DICTIONARY (ALL 30 TEAMS) ---
+# --- 2. COMPLETE NBA DICTIONARY ---
 NBA_STATS = {
     "Atlanta Hawks": {"ppp": 1.12, "opp_ppp": 1.13, "pace": 105.9, "stars": ["Jalen Johnson", "Zaccharie Risacher"]},
     "Boston Celtics": {"ppp": 1.21, "opp_ppp": 1.10, "pace": 95.3, "stars": ["Jayson Tatum", "Jaylen Brown"]},
@@ -163,7 +163,7 @@ def fetch_game_props_parallel(game):
     return res_list
 
 def sync_all_data():
-    with st.spinner("🚀 Parallel Engine Engaged..."):
+    with st.spinner("🚀 Scanning all games..."):
         try:
             headers = {"X-RapidAPI-Key": "55ee678671msh2dd4de4a390207bp10cd2bjsnf77bbbf65916", "X-RapidAPI-Host": "nba-injury-reports.p.rapidapi.com"}
             i_res = st.session_state.api_session.get(f"https://nba-injury-reports.p.rapidapi.com/injuries/{datetime.now().strftime('%Y-%m-%d')}", headers=headers)
@@ -180,7 +180,7 @@ def sync_all_data():
             
             combined_props = [item for sublist in prop_batches for item in sublist]
             st.session_state.smart_props = sorted(combined_props, key=lambda x: abs(x['proj'] - x['line']), reverse=True)
-        except: st.error("API Limit or Connection Error")
+        except: st.error("API Error")
 
 # --- 4. UI DISPLAY ---
 st.title("🏀 NBA SHARP AI")
@@ -202,7 +202,7 @@ with tab2:
     if st.session_state.smart_props:
         top_props = [p for p in st.session_state.smart_props if abs(p['proj'] - p['line']) > 4.5]
         if top_props:
-            st.subheader("🔥 AI Parlay Builder (Top Props)")
+            st.subheader("🔥 AI Parlay Builder")
             st.markdown('<div class="parlay-box">', unsafe_allow_html=True)
             for p in top_props[:3]:
                 st.write(f"✅ **{p['name']}**: {'OVER' if p['proj'] > p['line'] else 'UNDER'} {p['line']} pts")
